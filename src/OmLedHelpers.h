@@ -6,6 +6,7 @@
 #include "OmLed16.h"
 #include "OmLed16Patterns.h"
 #include "OmSk9822.h"
+#include "OmWs2812.h"
 
 class OmLeds
 {
