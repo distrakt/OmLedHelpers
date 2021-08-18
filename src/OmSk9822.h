@@ -9,14 +9,10 @@
 #ifndef __OmSk9822_h__
 #define __OmSk9822_h__
 
-#include "OmLed16.h"
+#include "OmLedT.h"
+#include "OmLedTStrip.h"
 
-#ifndef DIGITAL_WRITE
-#define DIGITAL_WRITE(_pin, _value) digitalWrite(_pin, _value)
-#endif
-
-
-template <int CLOCK_PIN, int DATA_PIN, int USE_SPI>
+template <int CLOCK_PIN, int DATA_PIN, int USE_SPI = 0>
 class OmSk9822Writer
 {
 public:
@@ -50,7 +46,14 @@ public:
     }
 #endif
 
-    int ww =0;
+    OmSk9822Writer()
+    {
+#if !USE_SPI
+        PIN_MODE(CLOCK_PIN, OUTPUT);
+        PIN_MODE(DATA_PIN, OUTPUT);
+#endif
+    }
+    int ww = 0;
     void w32(unsigned long x)
     {
 //        if(USE_SPI)
@@ -60,7 +63,7 @@ public:
             SPI.transfer (x >> 16);
             SPI.transfer (x >>  8);
             SPI.transfer (x >>  0);
-            ww+= x;
+            ww += x;
         }
 //        else
 #else
@@ -91,11 +94,10 @@ public:
 
     void showStrip(OmLed16Strip *strip)
     {
-        int k = strip->ledCount / 16;
         for(int ix = 0; ix < strip->ledCount; ix++)
             w32(strip->leds[ix].dot());
         w32(0);
-        w32(0);
+        w32(0); // urr probably needs more of these. or at least the correct number.
     }
 };
 

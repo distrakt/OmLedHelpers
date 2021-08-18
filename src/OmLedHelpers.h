@@ -3,10 +3,21 @@
 #ifndef _OMLEDS_H_
 #define _OMLEDS_H_
 
-#include "OmLed16.h"
-#include "OmLed16Patterns.h"
+// for desktop test builds, preprocessor defines these.
+// for arduino, here's where they arrive.
+#ifndef DIGITAL_WRITE
+#define DIGITAL_WRITE(_pin, _value) digitalWrite(_pin, _value)
+#define PIN_MODE(_pin, _mode) pinMode(_pin, _mode)
+#endif
+
+#include "OmLedT.h"
+#include "OmLedTStrip.h"
+#include "OmLedTPatterns.h"
+#include "OmLedTPatternManager.hpp"
+
 #include "OmSk9822.h"
 #include "OmWs2812.h"
+#include "OmLedUtils.h"
 
 class OmLeds
 {
@@ -37,19 +48,7 @@ public:
 };
 
 CRGB operator *(CRGB &co, float n);
+CRGB operator *(float n, CRGB &co);
 
-/// random range
-float rr(float low, float high);
-/// random range from low to high-1
-int ir(int low, int high);
-/// random range, with 50% chance of sign-flip.
-float rrS(float low, float high);
 
-CRGB chsv(int hue, int saturation, int value);
-
-int migrateI(int x, int dest, int delta);
-float migrateF(float x, float dest, float delta);
-float mapRange(float x, float inLow, float inHigh, float outLow, float outHigh);
-float mapRangeNoPin(float x, float inLow, float inHigh, float outLow, float outHigh);
-float pinRange(float x, float bound0, float bound1);
 #endif // _OMLEDS_H_

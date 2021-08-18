@@ -8,6 +8,13 @@
  Tinic Uro Use this as inspriration: https://github.com/PetrakovKirill/ws2812_lightDrum/blob/519a484ccd5e66dee91bbb83bc8156aec00a12ee/program/ws2812_stm32.c
  or my code to build the table from scratch: https://github.com/tinic/lightkraken/blob/537765937a4326fbb8b2c68ea827fc128539f2da/strip.h
 
+ analysis of timing requirements:
+ https://cpldcpu.wordpress.com/2014/01/14/light_ws2812-library-v2-0-part-i-understanding-the-ws2812/
+ conclusions of that analysis:
+ cycle time should be 1250nS to 9000nS (9µS)
+ zero pulse should be 62.5nS to 500nS
+ one pulse should be 625nS up to just shy of cycle time.
+
  ESP8266 is little-endian.
  WS2818 receives data GRB big endian
 
@@ -22,7 +29,24 @@
  * ws2812 wants the most significant bit first. Hence, entry 128 looks like 1111113, that
  * rightmost 3 goes out first, starting from the right hand side.
  */
-static const uint32_t ws2818SpiTable[] =
+
+/*
+   Example of blinking an LED using I2S DMA (spi)
+ https://shepherdingelectrons.blogspot.com/2018/09/esp8266-minimum-i2s-code.html
+
+ arduino sources for i2s:
+ https://github.com/esp8266/Arduino/blob/master/cores/esp8266/i2s.h
+
+ pinouts:
+ https://randomnerdtutorials.com/esp8266-pinout-reference-gpios/
+
+ someone's i2s approach: https://github.com/JoDaNl/esp8266_ws2812_i2s
+ mentioned at noisebridge: https://www.noisebridge.net/wiki/ESP8266/WS2812
+
+ ancient 2016 history of fastled vs uptime vs esp8266 vs ws2812:
+ https://github.com/FastLED/FastLED/issues/306
+ */
+static const uint32_t ws2812SpiTable[] =
 {
     0x11111111, 0x31111111, 0x13111111, 0x33111111, 0x11311111, 0x31311111, 0x13311111, 0x33311111,
     0x11131111, 0x31131111, 0x13131111, 0x33131111, 0x11331111, 0x31331111, 0x13331111, 0x33331111,
@@ -58,35 +82,68 @@ static const uint32_t ws2818SpiTable[] =
     0x11133333, 0x31133333, 0x13133333, 0x33133333, 0x11333333, 0x31333333, 0x13333333, 0x33333333,
 };
 
-static uint8_t *spiBuffer = NULL;
-static int spiBufferSize = 0;
+// Pretty dorky that OmWs2812Writer is a class, and also here's some globals.
+// Well, we're only ever going to use 1 at a time. But still I'm a dork right.
+static uint8_t *gSpiBuffer = NULL;
+static int gSpiBufferSize = 0;
+static bool gDoGrb = false;
+static bool gInterruptWindowEnabled = false;
+static unsigned int gCycleHazardLimit = 800;
+static uint8_t gBrightness = 255;
+static uint8_t gLimit = 255;
 
-#define RESETK 100 // generate hold-low reset pulse, in bytes. must be multiple of 4.
-#define SPIRATE 3000000
+
+void OmWs2812Writer::setInterruptWindow(bool interruptWindowEnabled, int cycleHazardLimit)
+{
+    // 1280 is 8µS at 160mhz
+    gInterruptWindowEnabled = interruptWindowEnabled;
+    gCycleHazardLimit = cycleHazardLimit;
+    printf("### setInterruptWindow windowed:%d cycleHazardLimit: %d\n", interruptWindowEnabled, cycleHazardLimit);
+}
+
+uint8_t min8(uint8_t a, uint8_t b)
+{
+    if(a < b)
+        return a;
+    return b;
+}
+
 void OmWs2812Writer::showLeds(CRGB *leds, int ledCount)
 {
+    this->showLeds((OmLed8 *) leds, ledCount);
+}
+void OmWs2812Writer::showLeds(OmLed8Strip *strip)
+{
+    this->showLeds(strip->leds, strip->ledCount);
+}
 
+#define RESETK 100 // generate hold-low reset pulse, in bytes. must be multiple of 4.
+#define SPIRATE 3200000
+
+template <typename LEDT>
+static void showLedsT(LEDT *leds, int ledCount, OmWs2812Writer::IrqInfo *irq)
+{
     int bytesNeeded = ledCount * 3 * 4 + RESETK;
 
-    if(!spiBuffer)
+    if(!gSpiBuffer)
     {
-        spiBuffer = (uint8_t *)malloc(bytesNeeded);
-        if(spiBuffer)
-            spiBufferSize = bytesNeeded;
+        gSpiBuffer = (uint8_t *)malloc(bytesNeeded);
+        if(gSpiBuffer)
+            gSpiBufferSize = bytesNeeded;
     }
 
-    if(bytesNeeded > spiBufferSize)
+    if(bytesNeeded > gSpiBufferSize)
     {
         static bool reported = false;
         if(!reported)
         {
-            Serial.printf("buffer %d too small for %d LEDs, need %d\n", spiBufferSize, ledCount, bytesNeeded);
+            Serial.printf("buffer %d too small for %d LEDs, need %d\n", gSpiBufferSize, ledCount, bytesNeeded);
             reported = true;
         }
         return;
     }
 
-    uint8_t *sb = spiBuffer;
+    uint8_t *sb = gSpiBuffer;
 
     // the reset pulse
     for(int ix = 0; ix < RESETK; ix++)
@@ -96,20 +153,132 @@ void OmWs2812Writer::showLeds(CRGB *leds, int ledCount)
     uint32_t *sb32 = (uint32_t *)sb;
     for(int ix = 0; ix < ledCount; ix++)
     {
-        *sb32++ = ws2818SpiTable[leds->g];
-        *sb32++ = ws2818SpiTable[leds->r];
-        *sb32++ = ws2818SpiTable[leds->b];
-        leds++;
+        OmLed8 led = leds[ix].getLed8();
+#define _br(_x) min8(gLimit,(_x) * gBrightness / 255)
+        if(gDoGrb)
+        {
+            *sb32++ = ws2812SpiTable[_br(led.g)];
+            *sb32++ = ws2812SpiTable[_br(led.r)];
+            *sb32++ = ws2812SpiTable[_br(led.b)];
+        }
+        else
+        {
+            *sb32++ = ws2812SpiTable[_br(led.r)];
+            *sb32++ = ws2812SpiTable[_br(led.g)];
+            *sb32++ = ws2812SpiTable[_br(led.b)];
+        }
     }
     sb = (uint8_t *)sb32;
 
-    int bytesToSend = sb - spiBuffer;
+    int bytesToSend = sb - gSpiBuffer;
     if(bytesToSend != bytesNeeded)
         Serial.printf("what? bytesToSend %d != bytesNeeded %d?\n", bytesToSend, bytesNeeded);
 
+    // do the transfer.
     SPI.begin();
     SPI.beginTransaction(SPISettings(SPIRATE, LSBFIRST, SPI_MODE0));
-    SPI.transfer(spiBuffer, bytesToSend);
+
+    uint32_t cyclesTotal = 0;
+    uint32_t cyclesMost = irq->pauseCyclesLongest;
+
+    bool hazarded = false;
+    int triesLeft = 2;
+
+    {
+    do1Try:
+        hazarded = false;
+        triesLeft--;
+
+        sb = gSpiBuffer;
+        int k = bytesToSend;
+
+        if(gInterruptWindowEnabled)
+        {
+            // TODO: esp32 doesnt support interrupts/noInterrupts
+            noInterrupts();
+        }
+
+        while (k--)
+        {
+            SPI.transfer(*sb++); // 1 byte to SPI is 2 bits of data to the ws2812 (4 bits for the pulse)
+
+
+            if(gInterruptWindowEnabled)
+            {
+                uint32_t t0 = ESP.getCycleCount();
+                interrupts(); noInterrupts(); // enable interrupts and immediately revoke. See who sneaks in.
+                uint32_t t1 = ESP.getCycleCount() - t0;
+                cyclesTotal += t1;
+                if (t1 > cyclesMost)
+                    cyclesMost = t1;
+
+                // statistics
+                {
+                    int bucketNumber = t1 / OmWs2812Writer::irqBucketSize;
+                    if(bucketNumber >= OmWs2812Writer::irqBucketCount)
+                        bucketNumber = OmWs2812Writer::irqBucketCount - 1;
+                    irq->buckets[bucketNumber] ++;
+                }
+
+                if (t1 > gCycleHazardLimit)
+                {
+                    irq->hazardReached++;
+                    break;
+                }
+            }
+        }
+        if(gInterruptWindowEnabled)
+        {
+            // TODO: esp32 doesnt support interrupts/noInterrupts
+            interrupts();
+        }
+        // ran out of cycles & gonna go again?
+        if(hazarded && triesLeft > 0)
+            goto do1Try;
+    }
+
+    //    SPI.transfer(spiBuffer, bytesToSend);
+
+    irq->pauseCyclesLongest = cyclesMost;
+    irq->pauseCyclesAverage = cyclesTotal / (float) bytesToSend;
 
     return;
+}
+
+void OmWs2812Writer::showStrip(OmLed16Strip *strip)
+{
+    showLedsT(strip->leds, strip->ledCount, &this->irq);
+}
+
+
+void OmWs2812Writer::showLeds(OmLed8 *leds, int ledCount)
+{
+    showLedsT(leds, ledCount, &this->irq);
+    return;
+}
+
+void OmWs2812Writer::setGrb(bool v)
+{
+    gDoGrb = v;
+}
+
+bool OmWs2812Writer::getGrb()
+{
+    return gDoGrb;
+}
+
+void OmWs2812Writer::setBrightness(uint8_t brightness)
+{
+    gBrightness = brightness;
+}
+
+void OmWs2812Writer::setLimit(uint8_t limit)
+{
+    gLimit = limit;
+}
+
+OmWs2812Writer::OmWs2812Writer()
+{
+    for(int ix = 0; ix < OmWs2812Writer::irqBucketCount; ix++)
+        this->irq.buckets[ix] = 0;
 }

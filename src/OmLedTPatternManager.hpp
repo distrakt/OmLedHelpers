@@ -22,6 +22,9 @@ public:
     std::vector<PATTERNT *> patterns;
     int currentPatternIndex = -1;
     PATTERNT *currentPattern = NULL;
+#define PM_HISTORY_SIZE 20
+    int msHistoryIx = 0;
+    int msHistory[PM_HISTORY_SIZE];
 
     // the cross fade pattern is the OLD pattern.
     // we set the new one immediately so the parameters are current.
@@ -31,9 +34,10 @@ public:
     int crossfadePatternIndex;
     STRIPT *crossfadeStrip = NULL;
 
-    void addPattern(PATTERNT *pattern)
+    PATTERNT *addPattern(PATTERNT *pattern)
     {
         this->patterns.push_back(pattern);
+        return pattern;
     }
 
     void initPatterns(int ledCount)
@@ -43,6 +47,9 @@ public:
         {
             pattern->init(ledCount);
         }
+
+        for(int ix = 0; ix < PM_HISTORY_SIZE; ix++)
+            this->msHistory[ix] = 0;
     }
 
     int getPatternCount()
@@ -70,6 +77,8 @@ public:
     /// Change to pattern, crossfaded over some milliseconds.
     void setPattern(int nextPatternIx, unsigned int ms)
     {
+        if(nextPatternIx == this->currentPatternIndex)
+            return;
         PATTERNT *nextPattern = NULL;
         if(nextPatternIx < 0 || nextPatternIx >= this->patterns.size())
         {
@@ -106,6 +115,9 @@ public:
 
     void tick(unsigned int ms, STRIPT *ledStrip)
     {
+        this->msHistoryIx = (this->msHistoryIx + 1) % PM_HISTORY_SIZE;
+        this->msHistory[this->msHistoryIx] = ms;
+
         if(this->crossfadeMs)
         {
             // we are crossfading! so be it.
@@ -135,11 +147,23 @@ public:
             this->tickInto(ms, ledStrip, this->currentPattern);
         }
     }
+
+    void getPerformanceInfo(int &millisecondsPerFrameOut, int &framesPerSecondOut)
+    {
+        float result = 0;
+        for (int ix = 0; ix < PM_HISTORY_SIZE; ix++)
+            result += msHistory[ix];
+        result = result / PM_HISTORY_SIZE;
+        if (result < 1)
+            result = 1;
+        millisecondsPerFrameOut = result + 0.5;
+        framesPerSecondOut = (1000.0 / result) + 0.5;
+    }
+
+
 };
 
 typedef OmLedTPatternManager<OmLed8> OmLed8PatternManager;
 typedef OmLedTPatternManager<OmLed16> OmLed16PatternManager;
-
-OmLed16PatternManager *getPatternManager(int ledCount);
 
 #endif /* OmLedTPatternManager_hpp */

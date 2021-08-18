@@ -1,15 +1,16 @@
 //
-//  OmLed16Patterns.h
+//  OmLedTPatterns.h
 //  OmLedHelpersDev
 //
 //  Created by David Van Brink on 5/10/2020 Plague Time.
 //  Copyright © 2020 David Van Brink. All rights reserved.
 //
 
-#ifndef __OmLed16Patterns_h__
-#define __OmLed16Patterns_h__
+#ifndef __OmLedTPatterns_h__
+#define __OmLedTPatterns_h__
 
-#include "OmLed16.h"
+#include "OmLedT.h"
+#include "OmLedTStrip.h"
 #include "OmLedUtils.h"
 #include <stdio.h>
 #include <vector>
@@ -29,6 +30,12 @@ typedef enum EOmLedPatternParamType
 template <typename LEDT>
 class OmLedTPattern
 {
+protected:
+    const char *name = NULL;
+    char nameX[16];
+    int ledCount;
+    uint32_t totalMs;
+    bool changed = true;
 public:
 
     class OmLedPatternParam
@@ -51,13 +58,6 @@ public:
 
     std::vector<OmLedPatternParam> params;
 
-    const char *name = NULL;
-    char nameX[16];
-
-    int ledCount;
-
-    uint32_t totalMs;
-
     OmLedTPattern()
     {
         return;
@@ -68,13 +68,19 @@ public:
         return;
     }
 
+    OmLedTPattern<LEDT> *setName(const char *name)
+    {
+        this->name = name;
+        return this;
+    }
+
     void init(int ledCount)
     {
         this->ledCount = ledCount;
         this->totalMs = 0;
         this->innerInit();
     }
-    void tick(unsigned int milliseconds, OmLed16Strip *strip)
+    void tick(unsigned int milliseconds, OmLedTStrip<LEDT> *strip)
     {
         if(milliseconds > 500)
             milliseconds = 100;
@@ -82,6 +88,11 @@ public:
         this->totalMs += milliseconds;
         if(strip)
             strip->clear();
+        if(this->changed)
+        {
+            this->innerChanged();
+            this->changed = false;
+        }
         this->innerTick(milliseconds, strip);
     }
 
@@ -144,6 +155,7 @@ public:
             pp->colorValue = co;
         if(pp->type == PPT_INT)
             pp->intValue = co.toHex();
+        this->changed = true;
     }
 
     void setParamValueInt(int ix, int x)
@@ -155,112 +167,12 @@ public:
             pp->colorValue = LEDT(x);
         if(pp->type == PPT_INT)
             pp->intValue = x;
-    }
-
-    std::vector<OmLedPatternParam *> getSomeParams(EOmLedPatternParamType type)
-    {
-        std::vector<OmLedPatternParam *> result;
-        for(OmLedPatternParam &aParam : this->params)
-        {
-            if(aParam.type == type)
-                result.push_back(&aParam);
-        }
-        return result;
-    }
-
-    OmLedPatternParam *getAParam(EOmLedPatternParamType type, unsigned int ix)
-    {
-        auto ps = getSomeParams(type);
-        if(ix < ps.size())
-            return ps[ix];
-        else
-            return NULL;
-    }
-
-    std::vector<int> getK()
-    {
-        std::vector<int> result;
-        return result;
-    }
-
-    std::vector<const char *> getSomeParamNames(EOmLedPatternParamType type)
-    {
-        auto ps = this->getSomeParams(type);
-        std::vector<const char *> result;
-        for(OmLedPatternParam *p : ps)
-            result.push_back(p->name);
-        return result;
-    }
-
-    std::vector<const char *> getColorParamNames()
-    {
-        return this->getSomeParamNames(PPT_COLOR);
-    }
-
-    std::vector<const char *> getIntParamNames()
-    {
-        return this->getSomeParamNames(PPT_INT);
-    }
-
-    std::vector<LEDT> getColorParamValues()
-    {
-        auto ps = this->getSomeParams(PPT_COLOR);
-        std::vector<LEDT> result;
-        for(OmLedPatternParam *p : ps)
-            result.push_back(p->colorValue);
-        return result;
-    }
-
-    LEDT getColorParamValue(unsigned int ix)
-    {
-        OmLedPatternParam *pp = this->getAParam(PPT_COLOR, ix);
-        if(pp)
-            return pp->colorValue;
-        else
-            return LEDT(0,0,0);
-    }
-
-    void setColorParamValue(unsigned int ix, LEDT value)
-    {
-        auto ps = this->getSomeParams(PPT_COLOR);
-        if(ix < ps.size())
-            ps[ix]->colorValue = value;
-    }
-
-    int getIntParamValue(unsigned int ix)
-    {
-        OmLedPatternParam *pp = this->getAParam(PPT_INT, ix);
-        if(pp)
-            return pp->intValue;
-        else
-            return 0;
-    }
-
-    std::vector<int> getIntParamValues()
-    {
-        auto ps = this->getSomeParams(PPT_INT);
-        std::vector<int> result;
-        for(OmLedPatternParam *p : ps)
-            result.push_back(p->intValue);
-        return result;
-    }
-
-    void setIntParamValue(unsigned int ix, int value)
-    {
-        auto pp = this->getAParam(PPT_INT, ix);
-        if(pp)
-            pp->intValue = value;
-    }
-
-    std::vector<const char *> getActionNames()
-    {
-        return this->getSomeParamNames(PPT_BUTTON);
+        this->changed = true;
     }
 
     void doAction(unsigned int ix, bool buttonDown)
     {
-        auto ps = this->getSomeParams(PPT_BUTTON);
-        if(ix < ps.size())
+        if(ix < this->params.size())
             this->innerDoAction(ix, buttonDown);
     }
 
@@ -271,6 +183,71 @@ public:
         else if(incDec > 0)
             incDec = +1;
         this->innerDoRotaryControl(incDec, buttonDown);
+    }
+
+    /// Save the params into an array of ints, you could write them to flash for later maybe
+    void getParams(int firstParam, int paramCount, uint32_t *storeThemHere)
+    {
+        // set them all to zero, so excess storage wont cause unneeded eeprom writes if saved
+        for(int ix = 0; ix < paramCount; ix++)
+            storeThemHere[ix] = 0;
+
+        for(int ix = firstParam; ix < firstParam + paramCount; ix++)
+        {
+            if(ix < 0 || ix >= this->params.size())
+                break;
+            OmLedPatternParam &pa = this->params[ix];
+            uint32_t v = 0;
+            switch(pa.type)
+            {
+                case PPT_INT:
+                {
+                    v = pa.intValue;
+                    break;
+                }
+                case PPT_COLOR:
+                {
+                    OmLed8 co = pa.colorValue.template getLedT<OmLed8>();
+                    v = (co.r << 16) | (co.g << 8) | (co.b << 0);
+                    break;
+                }
+                default:
+                    break;
+            }
+            *storeThemHere++ = v;
+        }
+    }
+
+    /// Set some or all the params from an array of ints, perhaps restored from flash. Note --
+    /// 16-bit colors won't come back identically, just 8 bits worth.
+    void setParams(int firstParam, int paramCount, uint32_t *restoreFromHere)
+    {
+        for(int ix = firstParam; ix < firstParam + paramCount; ix++)
+        {
+            if(ix < 0 || ix >= this->params.size())
+                break;
+            OmLedPatternParam &pa = this->params[ix];
+            uint32_t v = *restoreFromHere++;
+            switch(pa.type)
+            {
+                case PPT_INT:
+                {
+                    pa.intValue = v;
+                    break;
+                }
+                case PPT_COLOR:
+                {
+                    OmLed8 co;
+                    co.r = v >> 16;
+                    co.g = v >> 8;
+                    co.b = v >> 0;
+                    pa.colorValue = co.template getLedT<LEDT>();
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
     }
 
 protected:
@@ -301,7 +278,8 @@ protected:
     }
 
     virtual void innerInit() = 0;
-    virtual void innerTick(unsigned int milliseconds, OmLed16Strip *strip) = 0;
+    virtual void innerChanged() {};
+    virtual void innerTick(unsigned int milliseconds, OmLedTStrip<LEDT> *strip) = 0;
     virtual void innerDoAction(unsigned int ix, bool buttonDown) { UNUSED(ix); UNUSED(buttonDown); };
     bool rotaryButtonIsDown = false;
     virtual void innerDoRotaryControl(int incDec, bool buttonDown)
@@ -310,9 +288,22 @@ protected:
         if(incDec)
         {
             unsigned int paramIx = this->rotaryButtonIsDown ? 1 : 0;
-            OmLedPatternParam *pp = this->getAParam(PPT_INT, paramIx);
-            if(pp)
-                pp->intValue = pinRange(pp->intValue + incDec, 0, 100);
+            // look for the 0th or 1st int param, if any...
+            int pCount = this->getParamCount();
+            int intsFound = 0;
+            for(int ix = 0; ix < pCount; ix++)
+            {
+                if(this->getParamType(ix) == PPT_INT)
+                {
+                    if(intsFound == paramIx)
+                    {
+                        int v = this->getParamValueInt(ix);
+                        v = pinRange(v + incDec, 0, 100);
+                        this->setParamValueInt(ix, v);
+                    }
+                    intsFound++;
+                }
+            }
         }
         else
         {
@@ -322,6 +313,7 @@ protected:
 };
 
 typedef OmLedTPattern<OmLed16> OmLed16Pattern;
+typedef OmLedTPattern<OmLed8> OmLed8Pattern;
 
 class OmLed16PatternCrossfade
 {
@@ -372,17 +364,17 @@ public:
         this->addIntParam("rate", 1);
         this->addAction("go");
 
-        auto a = this->getColorParamNames();
-        auto b = this->getColorParamValues();
-        auto c = this->getIntParamNames();
-        auto d = this->getIntParamValues();
-        auto e = this->getActionNames();
+//        auto a = this->getColorParamNames();
+//        auto b = this->getColorParamValues();
+//        auto c = this->getIntParamNames();
+//        auto d = this->getIntParamValues();
+//        auto e = this->getActionNames();
     }
 
     void innerTick(unsigned int ms, OmLed16Strip *strip) override
     {
-        float rate = this->getIntParamValues()[0];
-        OmLed16 color = this->getColorParamValues()[0];
+        float rate = this->getParamValueInt(1);// this->getIntParamValues()[0];
+        OmLed16 color = this->getParamValueColor(0); // this->getColorParamValues()[0];
 
         this->k += ms * rate / 1000.0;
 
@@ -398,4 +390,4 @@ public:
     }
 };
 
-#endif // __OmLed16Patterns_h__
+#endif // __OmLedTPatterns_h__
